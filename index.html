@@ -1,0 +1,360 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#f5f5f5">
+<title>赤色立体地図・林道探索ナビ（iPhone・Android対応）</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="">
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin:0; min-height:100%; font-family:-apple-system,BlinkMacSystemFont,"Helvetica Neue",sans-serif; color:#222; }
+  body { min-height:100dvh; display:flex; flex-direction:column; padding-bottom:env(safe-area-inset-bottom); }
+  header { padding:10px 14px 8px; background:#f5f5f5; border-bottom:1px solid #ddd; }
+  h1 { margin:0 0 4px; font-size:18px; }
+  p { margin:4px 0; font-size:13px; line-height:1.45; }
+  #map { width:100%; height:48dvh; min-height:270px; flex:0 0 auto; }
+  #panel { padding:10px 13px calc(14px + env(safe-area-inset-bottom)); overflow:auto; -webkit-overflow-scrolling:touch; }
+  #coords, #locationStatus { font-size:14px; font-weight:600; overflow-wrap:anywhere; margin:0 0 7px; }
+  #locationStatus { font-weight:500; color:#315b35; }
+  .buttons { display:grid; grid-template-columns:1fr 1fr; gap:7px; margin:8px 0; }
+  button { appearance:none; border:0; border-radius:11px; min-height:46px; padding:10px 11px; font:600 15px -apple-system,BlinkMacSystemFont,sans-serif; touch-action:manipulation; }
+  button:disabled { opacity:.45; }
+  #save, .route, #go { background:#1769aa; color:white; }
+  #current, #copy, .copy { background:#e9ecef; color:#222; }
+  #go { grid-column:1 / -1; }
+  #forestToggle { background:#276749; color:white; grid-column:1 / -1; }
+  #forestStatus { font-size:12px; color:#555; padding:6px 8px; background:#f3f5f3; border-radius:8px; margin:6px 0; }
+  #trackStatus { font-size:13px; color:#24543a; background:#eef6ef; border-radius:8px; padding:8px; margin:7px 0; }
+  .trackButtons { display:grid; grid-template-columns:1fr 1fr; gap:7px; margin:7px 0; }
+  #trackStart { background:#176b3a; color:white; } #trackPause { background:#e7a52b; color:#222; } #trackFinish { background:#8b3030; color:white; } #trackExport { background:#e9ecef; color:#222; }
+  .sourceLinks { display:flex; flex-wrap:wrap; gap:8px; margin:7px 0; font-size:13px; }
+  .legend { font-size:12px; color:#555; }
+  .delete { background:#f7e8e8; color:#812626; }
+  h2 { font-size:15px; margin:12px 0 5px; }
+  #savedList { list-style:none; padding:0; margin:0; }
+  #savedList li { border-top:1px solid #e5e5e5; padding:8px 0; display:flex; flex-wrap:wrap; gap:5px; align-items:center; }
+  .point-info { flex:1 1 100%; font-size:13px; overflow-wrap:anywhere; }
+  .point-name { font-weight:700; margin-bottom:2px; }
+  .note { font-size:12px; color:#555; }
+  a { color:#075ca8; }
+  @media (min-width:700px) {
+    body { display:grid; grid-template-columns:minmax(0,1fr) 380px; grid-template-rows:auto 1fr; height:100dvh; }
+    header { grid-column:1 / -1; }
+    #map { height:auto; min-height:400px; }
+    #panel { max-height:100%; overflow:auto; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>赤色立体地図・林道探索ナビ</h1>
+  <p>福井市周辺の林道候補を重ねて表示し、地点を選んでGoogleマップの車ルート検索につなぎます。</p>
+</header>
+<div id="map" aria-label="赤色立体地図"></div>
+<section id="panel">
+  <div id="coords">地図をタップして目的地を選んでください。</div>
+  <div id="locationStatus">現在地：まだ取得していません。</div>
+  <div class="buttons">
+    <button id="current">現在地を取得</button>
+    <button id="forestToggle">林道候補を表示</button>
+    <button id="copy" disabled>目的地座標をコピー</button>
+    <button id="save" disabled>この地点を保存</button>
+    <button id="go" disabled>現在地から車ルート</button>
+  </div>
+  <div id="forestStatus" aria-live="polite">林道候補：まだ読み込んでいません。地図を拡大して「林道候補を表示」を押してください。</div>
+  <h2>GPSで移動経路を記録</h2>
+  <div id="trackStatus" aria-live="polite">GPS記録：停止中です。開始すると移動した道筋を地図上に線で表示します。</div>
+  <div class="trackButtons">
+    <button id="trackStart">GPS記録開始</button>
+    <button id="trackPause" disabled>一時停止</button>
+    <button id="trackFinish" disabled>記録終了・保存</button>
+    <button id="trackExport" disabled>GPXを書き出す</button>
+  </div>
+  <p class="note">GPS記録中はSafariを前面に表示し、画面を消さないでください。端末やブラウザによっては画面ロックやアプリ切替中にGPS記録が止まることがあります。位置情報の誤差により線が林道からずれる場合があります。</p>
+  <p class="legend">地図上の橙色の線＝OpenStreetMapの highway=track（林道・作業道等の候補）。線をタップすると、その場所を目的地にできます。</p>
+  <div class="sourceLinks"><a href="https://morinavi.pref.fukui.lg.jp/" target="_blank" rel="noopener">森ナビふくい</a><a href="https://www.city.fukui.lg.jp/sigoto/nourin/ringyou/nimaida2.html" target="_blank" rel="noopener">福井市の林道通行情報</a><a href="https://www.pref.fukui.lg.jp/doc/moridukurika/rindou/tsukou.html" target="_blank" rel="noopener">福井県の林道通行情報</a></div>
+  <h2>保存した地点</h2>
+  <ul id="savedList"></ul>
+  <p class="note">位置情報を使うには、このページをHTTPSのWebサイトとして開き、iPhoneまたはAndroidで位置情報を許可してください。ファイルアプリから直接開いた場合は、現在地取得が使えないことがあります。</p>
+  <p class="note">保存地点は、このiPhoneのこのブラウザ内に保存されます。別の端末とは自動同期されません。大切な地点は座標も控えてください。</p>
+  <p class="note">重要：橙色の線は林道候補であり、車両通行可能・通行許可済み・現在通行可能という意味ではありません。私有地、ゲート、通行止め、崩落、幅員不足などを必ず現地・管理者情報で確認してください。Googleマップが林道区間を案内しない場合があります。</p>
+  <p class="note">林道候補データ：OpenStreetMap（地図情報は不完全な場合があります）。森ナビふくい・福井市・福井県の公式情報も併せて確認してください。</p>
+  <p class="note">地図データ：国土地理院「地理院タイル」赤色立体地図。<a href="https://maps.gsi.go.jp/development/ichiran.html" target="_blank" rel="noopener">利用条件はこちら</a>。</p>
+</section>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+<script>
+(() => {
+  const STORAGE_KEY = 'sekishoku_saved_places_v2';
+  const map = L.map('map').setView([36.0641, 136.2196], 11);
+  L.tileLayer('https://cyberjapandata.gsi.go.jp/xyz/sekishoku/{z}/{x}/{y}.png', {
+    minZoom: 2, maxZoom: 14,
+    attribution: '地図データ：<a href="https://www.gsi.go.jp/" target="_blank" rel="noopener">国土地理院</a>（赤色立体地図）'
+  }).addTo(map);
+
+  let selected = null, selectedMarker = null, currentPosition = null, currentMarker = null, savedMarkers = [];
+  let forestLayer = L.featureGroup().addTo(map);
+  let forestVisible = false, forestLoading = false, lastForestQuery = 0, forestRefreshQueued = false;
+  const forestStatus = document.getElementById('forestStatus');
+  const forestToggle = document.getElementById('forestToggle');
+  const coords = document.getElementById('coords');
+  const status = document.getElementById('locationStatus');
+  const saveBtn = document.getElementById('save');
+  const goBtn = document.getElementById('go');
+  const copyBtn = document.getElementById('copy');
+  const currentBtn = document.getElementById('current');
+  const savedList = document.getElementById('savedList');
+  const trackStatus = document.getElementById('trackStatus');
+  const trackStartBtn = document.getElementById('trackStart');
+  const trackPauseBtn = document.getElementById('trackPause');
+  const trackFinishBtn = document.getElementById('trackFinish');
+  const trackExportBtn = document.getElementById('trackExport');
+  let watchId = null, trackActive = false, trackPaused = false, trackPoints = [], trackLine = null;
+  let trackStartedAt = null, lastTrackSaved = null;
+
+  // OpenStreetMapの highway=track を林道・作業道等の候補として取得します。
+  // access / vehicle / motor_vehicle が no または private の道路は候補から除外します。
+  function escapeHtml(value) { return String(value).replace(/[&<>\"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',"'":'&#39;'}[ch])); }
+  function forestQuery(bounds) {
+    const south=bounds.getSouth(), west=bounds.getWest(), north=bounds.getNorth(), east=bounds.getEast();
+    return `[out:json][timeout:25];way["highway"="track"]["access"!="no"]["access"!="private"]["vehicle"!="no"]["vehicle"!="private"]["motor_vehicle"!="no"]["motor_vehicle"!="private"](${south},${west},${north},${east});out tags geom;`;
+  }
+  async function loadForestRoads(force=false) {
+    if (forestLoading) { forestRefreshQueued = true; return; }
+    if (map.getZoom() < 12) {
+      forestStatus.textContent='林道候補を表示するには、地図をもう少し拡大してください（ズーム12以上）。';
+      return;
+    }
+    const now=Date.now();
+    if (!force && now-lastForestQuery < 5000) return;
+    forestLoading=true; lastForestQuery=now;
+    forestStatus.textContent='林道候補を検索しています…通信状況により少し時間がかかります。';
+    const b=map.getBounds();
+    try {
+      const query=forestQuery(b);
+      // Netlify Functionsを経由してOverpassへ問い合わせます。
+      // ブラウザから外部Overpassへ直接接続する際のReferer/CORS制限を避けます。
+      const response=await fetch('/.netlify/functions/overpass', {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({query})
+      });
+      const payload=await response.json().catch(()=>({}));
+      if(!response.ok) throw new Error(payload.error || ('中継サーバー HTTP '+response.status));
+      if(!payload.data || !Array.isArray(payload.data.elements)) throw new Error(payload.error || '応答データの形式が違います');
+      const data=payload.data;
+      const usedEndpoint=payload.source || 'Netlify中継';
+      forestLayer.clearLayers();
+      let count=0;
+      for (const way of (data.elements||[])) {
+        const tags=way.tags||{};
+        if (['no','private'].includes(tags.access) || ['no','private'].includes(tags.vehicle) || ['no','private'].includes(tags.motor_vehicle)) continue;
+        if (tags.motor_vehicle==='agricultural' || tags.vehicle==='forestry') { /* 管理用途のタグも注意表示対象 */ }
+        if (!way.geometry || way.geometry.length<2) continue;
+        const latlngs=way.geometry.map(pt=>[pt.lat,pt.lon]);
+        const line=L.polyline(latlngs,{color:'#f28c28',weight:5,opacity:.9}).addTo(forestLayer);
+        const roadName=tags.name || tags.ref || '名称未登録の林道候補';
+        const details=[roadName, tags.tracktype?'路面区分：'+tags.tracktype:'', tags.surface?'路面：'+tags.surface:'', tags.access?'アクセス：'+tags.access:'', tags.motor_vehicle?'車両：'+tags.motor_vehicle:''].filter(Boolean).map(escapeHtml).join('<br>');
+        line.bindPopup(`<strong>${details}</strong><br><small>地図上の道路候補です。車両通行・通行許可・現在の通行状況は未確認です。</small>`);
+        line.on('click', ev=>showSelected(ev.latlng.lat,ev.latlng.lng));
+        count++;
+      }
+      forestStatus.textContent=`${usedEndpoint}から林道候補を${count}区間取得しました。橙色の線をタップして地点を選べます。データの登録漏れ・古さがあるため、現地確認が必要です。`;
+    } catch(err) {
+      forestStatus.textContent='林道候補を取得できませんでした：'+(err.message||'原因不明');
+      console.error(err);
+    } finally {
+      forestLoading=false;
+      if (forestRefreshQueued && forestVisible) {
+        forestRefreshQueued=false;
+        window.setTimeout(()=>loadForestRoads(true), 700);
+      }
+    }
+  }
+  forestToggle.addEventListener('click',()=>{
+    forestVisible=!forestVisible;
+    if(forestVisible){ forestLayer.addTo(map); forestToggle.textContent='林道候補を非表示'; loadForestRoads(true); }
+    else { map.removeLayer(forestLayer); forestToggle.textContent='林道候補を表示'; forestStatus.textContent='林道候補を非表示にしています。'; }
+  });
+  map.on('moveend',()=>{ if(forestVisible) loadForestRoads(false); });
+
+  function loadPlaces() {
+    try {
+      const value = JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]');
+      return Array.isArray(value) ? value : [];
+    } catch { return []; }
+  }
+  let places = loadPlaces();
+  function storePlaces() {
+    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(places)); }
+    catch { alert('保存できませんでした。SafariのWebサイトデータ設定をご確認ください。'); }
+  }
+  function showSelected(lat, lon) {
+    selected = {lat, lon};
+    if (selectedMarker) selectedMarker.setLatLng([lat, lon]);
+    else selectedMarker = L.marker([lat, lon]).addTo(map);
+    coords.textContent = `目的地：緯度 ${lat.toFixed(6)} ／ 経度 ${lon.toFixed(6)}`;
+    saveBtn.disabled = goBtn.disabled = copyBtn.disabled = false;
+  }
+  function getCurrentPosition() {
+    return new Promise((resolve, reject) => {
+      if (!navigator.geolocation) return reject(new Error('このブラウザでは位置情報を利用できません。'));
+      navigator.geolocation.getCurrentPosition(
+        pos => resolve({lat:pos.coords.latitude, lon:pos.coords.longitude}),
+        err => reject(err),
+        {enableHighAccuracy:true, timeout:15000, maximumAge:30000}
+      );
+    });
+  }
+  async function updateCurrentPosition() {
+    status.textContent = '現在地を取得しています…';
+    currentBtn.disabled = true;
+    try {
+      currentPosition = await getCurrentPosition();
+      const {lat,lon} = currentPosition;
+      status.textContent = `現在地：${lat.toFixed(6)}, ${lon.toFixed(6)}`;
+      if (currentMarker) currentMarker.setLatLng([lat,lon]);
+      else currentMarker = L.circleMarker([lat,lon], {radius:9, color:'#1769aa', fillColor:'#4aa3ff', fillOpacity:.9, weight:3}).addTo(map).bindTooltip('現在地');
+      map.setView([lat,lon], Math.max(map.getZoom(), 13));
+    } catch (err) {
+      let msg = '現在地を取得できませんでした。';
+      if (err.code === 1) msg += ' iPhoneの設定とSafariの位置情報許可を確認してください。';
+      else if (err.code === 2) msg += ' GPS・位置情報サービスを確認してください。';
+      else if (err.code === 3) msg += ' 時間切れです。もう一度お試しください。';
+      else msg += ' HTTPSのWebサイトで開いているか確認してください。';
+      status.textContent = msg;
+      alert(msg);
+    } finally { currentBtn.disabled = false; }
+  }
+  async function routeTo(lat, lon) {
+    goBtn.disabled = true;
+    status.textContent = '現在地を確認してルートを準備しています…';
+    try {
+      const origin = await getCurrentPosition();
+      currentPosition = origin;
+      const destination = `${Number(lat).toFixed(6)},${Number(lon).toFixed(6)}`;
+      const start = `${origin.lat.toFixed(6)},${origin.lon.toFixed(6)}`;
+      const url = `https://www.google.com/maps/dir/?api=1&origin=${encodeURIComponent(start)}&destination=${encodeURIComponent(destination)}&travelmode=driving`;
+      status.textContent = 'Googleマップを開きます。';
+      window.location.href = url;
+    } catch (err) {
+      status.textContent = '現在地を取得できませんでした。';
+      alert('現在地が取得できません。位置情報を許可してから、もう一度お試しください。');
+    } finally { goBtn.disabled = false; }
+  }
+  async function copyCoords(lat, lon) {
+    const value = `${Number(lat).toFixed(6)}, ${Number(lon).toFixed(6)}`;
+    try { await navigator.clipboard.writeText(value); alert('目的地の緯度・経度をコピーしました。'); }
+    catch { window.prompt('緯度・経度を選択してコピーしてください。', value); }
+  }
+  function renderSaved() {
+    savedMarkers.forEach(m => map.removeLayer(m));
+    savedMarkers = [];
+    savedList.replaceChildren();
+    if (!places.length) {
+      const li = document.createElement('li'); li.className='note';
+      li.textContent='まだ保存地点はありません。地図をタップして保存してください。';
+      savedList.appendChild(li); return;
+    }
+    places.forEach((place,index) => {
+      const marker = L.marker([place.lat,place.lon]).addTo(map).bindTooltip(`${index+1}. ${place.name}`);
+      savedMarkers.push(marker);
+      const li=document.createElement('li'), info=document.createElement('div');
+      info.className='point-info';
+      const name=document.createElement('div'); name.className='point-name'; name.textContent=`${index+1}. ${place.name}`;
+      const position=document.createElement('div'); position.textContent=`${Number(place.lat).toFixed(6)}, ${Number(place.lon).toFixed(6)}`;
+      info.append(name,position);
+      const show=document.createElement('button'); show.className='copy'; show.textContent='地図で表示';
+      show.addEventListener('click',()=>{showSelected(Number(place.lat),Number(place.lon));map.setView([place.lat,place.lon],Math.max(map.getZoom(),14));});
+      const route=document.createElement('button'); route.className='route'; route.textContent='現在地から車ルート';
+      route.addEventListener('click',()=>routeTo(place.lat,place.lon));
+      const copy=document.createElement('button'); copy.className='copy'; copy.textContent='座標コピー';
+      copy.addEventListener('click',()=>copyCoords(place.lat,place.lon));
+      const remove=document.createElement('button'); remove.className='delete'; remove.textContent='削除';
+      remove.addEventListener('click',()=>{if(!confirm(`「${place.name}」を削除しますか？`))return;places.splice(index,1);storePlaces();renderSaved();});
+      li.append(info,show,route,copy,remove); savedList.appendChild(li);
+    });
+  }
+  function distanceMeters(a,b) {
+    const rad=v=>v*Math.PI/180, R=6371000;
+    const dLat=rad(b.lat-a.lat), dLon=rad(b.lon-a.lon);
+    const x=Math.sin(dLat/2)**2+Math.cos(rad(a.lat))*Math.cos(rad(b.lat))*Math.sin(dLon/2)**2;
+    return 2*R*Math.atan2(Math.sqrt(x),Math.sqrt(1-x));
+  }
+  function trackDistance() {
+    let total=0; for(let i=1;i<trackPoints.length;i++) total+=distanceMeters(trackPoints[i-1],trackPoints[i]); return total;
+  }
+  function updateTrackStatus(extra='') {
+    const km=(trackDistance()/1000).toFixed(2);
+    const mins=trackStartedAt?Math.max(0,Math.round((Date.now()-trackStartedAt)/60000)):0;
+    trackStatus.textContent=`GPS記録：${trackPaused?'一時停止中':trackActive?'記録中':'停止中'} ／ 記録点 ${trackPoints.length}点 ／ 距離 約${km} km ／ 経過 ${mins}分${extra?' ／ '+extra:''}`;
+  }
+  function onTrackPosition(pos) {
+    const c=pos.coords;
+    // GPSの精度が極端に悪い測位は記録せず、誤差を表示します。
+    if(!Number.isFinite(c.latitude)||!Number.isFinite(c.longitude)) return;
+    if(c.accuracy>100) { updateTrackStatus(`GPS精度が低いため待機中（誤差約${Math.round(c.accuracy)}m）`); return; }
+    const point={lat:c.latitude,lon:c.longitude,time:new Date(pos.timestamp||Date.now()).toISOString(),accuracy:c.accuracy};
+    const prev=trackPoints[trackPoints.length-1];
+    if(prev && distanceMeters(prev,point)<4) return;
+    trackPoints.push(point);
+    if(!trackLine) trackLine=L.polyline(trackPoints.map(p=>[p.lat,p.lon]),{color:'#087fce',weight:5,opacity:.95,dashArray:'8 5'}).addTo(map);
+    else trackLine.setLatLngs(trackPoints.map(p=>[p.lat,p.lon]));
+    currentPosition={lat:point.lat,lon:point.lon};
+    if(currentMarker) currentMarker.setLatLng([point.lat,point.lon]);
+    else currentMarker=L.circleMarker([point.lat,point.lon],{radius:8,color:'#075ca8',fillColor:'#4aa3ff',fillOpacity:.95,weight:3}).addTo(map).bindTooltip('GPS現在地');
+    map.panTo([point.lat,point.lon],{animate:true,duration:.4});
+    updateTrackStatus(`GPS誤差 約${Math.round(c.accuracy)}m`);
+  }
+  function stopGpsWatch() { if(watchId!==null) navigator.geolocation.clearWatch(watchId); watchId=null; }
+  trackStartBtn.addEventListener('click',()=>{
+    if(!navigator.geolocation) { alert('このブラウザではGPSを利用できません。'); return; }
+    if(!window.isSecureContext) { alert('HTTPSのサイトとして開いてください。'); return; }
+    if(!trackPaused) { trackPoints=[]; trackStartedAt=Date.now(); if(trackLine){map.removeLayer(trackLine);trackLine=null;} }
+    trackActive=true; trackPaused=false;
+    trackStartBtn.disabled=true; trackPauseBtn.disabled=false; trackFinishBtn.disabled=false;
+    updateTrackStatus('GPS測位を待っています');
+    watchId=navigator.geolocation.watchPosition(onTrackPosition,err=>{
+      const msg=err.code===1?'位置情報が許可されていません':err.code===2?'GPS位置を取得できません':'GPS取得が時間切れです';
+      updateTrackStatus(msg);
+    },{enableHighAccuracy:true,maximumAge:0,timeout:20000});
+  });
+  trackPauseBtn.addEventListener('click',()=>{
+    if(!trackActive)return; stopGpsWatch(); trackActive=false; trackPaused=true;
+    trackStartBtn.disabled=false; trackStartBtn.textContent='GPS記録を再開'; trackPauseBtn.disabled=true; updateTrackStatus();
+  });
+  trackFinishBtn.addEventListener('click',()=>{
+    stopGpsWatch(); trackActive=false; trackPaused=false;
+    trackStartBtn.disabled=false; trackStartBtn.textContent='GPS記録開始'; trackPauseBtn.disabled=true; trackFinishBtn.disabled=true;
+    if(trackPoints.length<2) { updateTrackStatus('記録点が少ないため保存できません'); return; }
+    lastTrackSaved={name:'林道記録 '+new Date().toLocaleString('ja-JP'),startedAt:trackStartedAt,points:trackPoints.slice(),distance:trackDistance()};
+    try { localStorage.setItem('sekishoku_last_gps_track_v1',JSON.stringify(lastTrackSaved)); trackExportBtn.disabled=false; updateTrackStatus('この端末に保存しました。GPXで書き出せます'); }
+    catch(e) { updateTrackStatus('保存容量不足のため、GPXを書き出してください'); trackExportBtn.disabled=false; }
+  });
+  trackExportBtn.addEventListener('click',()=>{
+    if(!lastTrackSaved) { try { lastTrackSaved=JSON.parse(localStorage.getItem('sekishoku_last_gps_track_v1')||'null'); } catch{} }
+    if(!lastTrackSaved) { alert('書き出すGPS記録がありません。'); return; }
+    const esc=s=>String(s).replace(/[&<>"']/g,ch=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&apos;'}[ch]));
+    const pts=lastTrackSaved.points.map(p=>`<trkpt lat="${p.lat}" lon="${p.lon}"><time>${esc(p.time)}</time></trkpt>`).join('');
+    const gpx=`<?xml version="1.0" encoding="UTF-8"?><gpx version="1.1" creator="Sekishoku Forest Nav" xmlns="http://www.topografix.com/GPX/1/1"><trk><name>${esc(lastTrackSaved.name)}</name><trkseg>${pts}</trkseg></trk></gpx>`;
+    const blob=new Blob([gpx],{type:'application/gpx+xml'}), url=URL.createObjectURL(blob), a=document.createElement('a');
+    a.href=url; a.download='rindo-gps-track.gpx'; document.body.appendChild(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(url),1500);
+  });
+  try { lastTrackSaved=JSON.parse(localStorage.getItem('sekishoku_last_gps_track_v1')||'null'); if(lastTrackSaved) trackExportBtn.disabled=false; } catch{}
+  map.on('click',e=>showSelected(e.latlng.lat,e.latlng.lng));
+  currentBtn.addEventListener('click',updateCurrentPosition);
+  saveBtn.addEventListener('click',()=>{
+    if(!selected)return;
+    const fallback=`地点${places.length+1}`;
+    const name=prompt('保存する地点の名前を入力してください。',fallback);
+    if(name===null)return;
+    places.push({name:name.trim()||fallback,lat:selected.lat,lon:selected.lon});
+    storePlaces();renderSaved();
+  });
+  goBtn.addEventListener('click',()=>{if(selected)routeTo(selected.lat,selected.lon);});
+  copyBtn.addEventListener('click',()=>{if(selected)copyCoords(selected.lat,selected.lon);});
+  renderSaved();
+})();
+</script>
+</body>
+</html>
